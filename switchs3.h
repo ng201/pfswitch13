@@ -12,30 +12,33 @@
 #include "../../../oflib/ofl-actions.h"
 #include "../../../oflib/ofl-messages.h"
 
-#include "Switch13.h"
-#include "s2.h"
+#include "switch13.h"
+#include "switchs2.h"
 
 namespace pfswitch13{
+
+    using namespace vigil;
+    using namespace vigil::container;
 
     class SwitchS3:public Switch13{
 
         public:
 
             SwitchS3(const vigil::datapathid dpid,const std::string &name,
-                     const SwitchS2Data &data):Switch13(dpid,name,data){}
+                     const SwitchData &data):Switch13(dpid,name,data){}
 
-            SwitchS3(const unsgined dpid,const std::string &name,
-                     const SwitchS2Data &data):Switch13(dpid,name,data){}
+            SwitchS3(const unsigned dpid,const std::string &name,
+                     const SwitchData &data):Switch13(dpid,name,data){}
 
             SwitchS3(const uint64_t dpid,const std::string &name,
-                     const SwitchS2Data &data):Switch13(dpid,name,data){}
+                     const SwitchData &data):Switch13(dpid,name,data){}
 
             virtual void configure(unsigned tnum=OFP_DEFAULT_PRIORITY,enum of_tmod_cmd cmd=OFTM_ADD){
                 Flow f;
                 f.Add_Field("in_port",data.in_port);
                 f.Add_Field(data.as.c_str(),data.pid);
                 Actions *acts=new Actions();
-                if(as=="vlan_id") acts->CreatePopVlan();
+                if(data.as=="vlan_id") acts->CreatePopVlan();
                 else acts->CreatePopVlan();
                 acts->CreateOutput(data.out_port);
                 Instruction *inst=new Instruction();
@@ -49,7 +52,7 @@ namespace pfswitch13{
                                            OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
                 mod->AddMatch(&f.match);
                 mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
+                nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
 
                 delete inst; delete acts;
             }

@@ -5,6 +5,17 @@
 
 #include "netinet++/datapathid.hh"
 
+#include "nox.hh"
+#include "openflow-default.hh"
+#include "flow.hh"
+#include "fnv_hash.hh"
+#include "ofp-msg-event.hh"
+#include "flowmod.hh"
+#include "datapath-join.hh"
+
+#include "../../../oflib/ofl-actions.h"
+#include "../../../oflib/ofl-messages.h"
+
 namespace pfswitch13{
 
     enum of_tmod_cmd{OFTM_ADD,OFTM_MODIFY,OFTM_DELETE};
@@ -41,19 +52,19 @@ namespace pfswitch13{
             Switch13(const vigil::datapathid dpid,const std::string &name,
                      const SwitchData &data):dpid(dpid),name(name),data(data){}
 
-            Switch13(const unsgined dpid,const std::string &name,
-                     const SwitchData &data):dpid(dpid),name(name),data(data){}
+            Switch13(const unsigned dpid,const std::string &name,
+                     const SwitchData &data):dpid(vigil::datapathid::from_host(dpid)),name(name),data(data){}
 
             Switch13(const uint64_t dpid,const std::string &name,
-                     const SwitchData &data):dpid(dpid),name(name),data(data){}
+                     const SwitchData &data):dpid(vigil::datapathid::from_host(dpid)),name(name),data(data){}
 
-            virtual Switch13(){}
+            virtual ~Switch13(){}
 
             virtual void configure(unsigned=OFP_DEFAULT_PRIORITY,enum of_tmod_cmd=OFTM_ADD)=0;
 
             virtual void switchWeights(unsigned*,enum of_tmod_cmd=OFTM_MODIFY)=0;
 
-            static unsigned toFlowCmd(enum of_tmod_cmd cmd){
+            static ofp_flow_mod_command toFlowCmd(enum of_tmod_cmd cmd){
                 switch(cmd){
                     case OFTM_ADD:
                                        return OFPFC_ADD;
@@ -65,7 +76,7 @@ namespace pfswitch13{
                 return OFPFC_ADD;
             }
 
-            static unsigned toGroupCmd(enum of_tmod_cmd cmd){
+            static ofp_group_mod_command toGroupCmd(enum of_tmod_cmd cmd){
                 switch(cmd){
                     case OFTM_ADD:
                                        return OFPGC_ADD;
@@ -74,7 +85,7 @@ namespace pfswitch13{
                     default:
                                        return OFPGC_DELETE;
                 }
-                return OFPFC_ADD;
+                return OFPGC_ADD;
             }
 
 

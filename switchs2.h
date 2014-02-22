@@ -12,9 +12,12 @@
 #include "../../../oflib/ofl-actions.h"
 #include "../../../oflib/ofl-messages.h"
 
-#include "Switch13.h"
+#include "switch13.h"
 
 namespace pfswitch13{
+
+    using namespace vigil;
+    using namespace vigil::container;
 
     class SwitchS2:public Switch13{
 
@@ -28,7 +31,7 @@ namespace pfswitch13{
             SwitchS2(const vigil::datapathid dpid,const std::string &name,
                      const SwitchData &data):Switch13(dpid,name,data){}
 
-            SwitchS2(const unsgined dpid,const std::string &name,
+            SwitchS2(const unsigned dpid,const std::string &name,
                      const SwitchData &data):Switch13(dpid,name,data){}
 
             SwitchS2(const uint64_t dpid,const std::string &name,
@@ -51,7 +54,7 @@ namespace pfswitch13{
                                            OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
                 mod->AddMatch(&f.match);
                 mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
+                nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
 
                 delete inst; delete acts;
             }

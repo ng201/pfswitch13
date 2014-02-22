@@ -14,9 +14,12 @@
 #include "../../../oflib/ofl-actions.h"
 #include "../../../oflib/ofl-messages.h"
 
-#include "Switch13.h"
+#include "switch13.h"
 
 namespace pfswitch13{
+
+    using namespace vigil;
+    using namespace vigil::container;
 
     class SwitchS1:public Switch13{
 
@@ -27,19 +30,19 @@ namespace pfswitch13{
 
         public:
 
-            SwitchS(const vigil::datapathid dpid,const std::string &name,
-                    ipv4_addr src_ip,ipv4_addr dst_ip,
-                    const SwitchData &data):Switch13(dpid,name,data),
+            SwitchS1(const vigil::datapathid dpid,const std::string &name,
+                     ipv4_addr src_ip,ipv4_addr dst_ip,
+                     const SwitchData &data):Switch13(dpid,name,data),
                                             src_ip(src_ip),dst_ip(dst_ip){}
 
-            SwitchS(const unsgined dpid,const std::string &name,
-                    ipv4_addr src_ip,ipv4_addr dst_ip,
-                    const SwitchData &data):Switch13(dpid,name,data),
+            SwitchS1(const unsigned dpid,const std::string &name,
+                     ipv4_addr src_ip,ipv4_addr dst_ip,
+                     const SwitchData &data):Switch13(dpid,name,data),
                                             src_ip(src_ip),dst_ip(dst_ip){}
 
-            SwitchS(const uint64_t dpid,const std::string &name,
-                    ipv4_addr src_ip,ipv4_addr dst_ip,
-                    const SwitchData &data):Switch13(dpid,name,data),
+            SwitchS1(const uint64_t dpid,const std::string &name,
+                     ipv4_addr src_ip,ipv4_addr dst_ip,
+                     const SwitchData &data):Switch13(dpid,name,data),
                                             src_ip(src_ip),dst_ip(dst_ip){}
 
             virtual void configure(unsigned tnum=OFP_DEFAULT_PRIORITY,enum of_tmod_cmd cmd=OFTM_ADD){
@@ -70,7 +73,7 @@ namespace pfswitch13{
                                            OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
                 mod->AddMatch(&f.match);
                 mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
+                nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
 
                 delete inst; delete acts;
             }
