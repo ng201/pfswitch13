@@ -8,7 +8,6 @@
 #include "nox.hh"
 #include "openflow-default.hh"
 #include "flow.hh"
-#include "fnv_hash.hh"
 #include "ofp-msg-event.hh"
 #include "flowmod.hh"
 #include "datapath-join.hh"

@@ -5,7 +5,7 @@
 
 #include "netinet++/ipaddr.hh"
 
-#include "openflow-default.hh"
+//#include "openflow-default.hh"
 #include "flow.hh"
 #include "ofp-msg-event.hh"
 #include "flowmod.hh"
@@ -19,7 +19,6 @@
 namespace pfswitch13{
 
     using namespace vigil;
-    using namespace vigil::container;
 
     class SwitchS1:public Switch13{
 

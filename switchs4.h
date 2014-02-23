@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "openflow-default.hh"
+//#include "openflow-default.hh"
 #include "flow.hh"
 #include "ofp-msg-event.hh"
 #include "flowmod.hh"
@@ -18,7 +18,6 @@
 namespace pfswitch13{
 
     using namespace vigil;
-    using namespace vigil::container;
 
 
     /// PathHdr - null teminated, i.e., the last elements pid have to be zero!
