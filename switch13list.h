@@ -21,21 +21,27 @@ namespace pfswitch13{
 
         private:
 
+            Switch13List& half_clear(){
+                std::vector<Switch13*>::clear();
+                return *this;
+            }
+
+
             /// Makes the parameter part of the current list.
             Switch13List& consume(Switch13List &l){
                 for(std::vector<Switch13*>::iterator it=l.begin();it!=l.end();++it){
                     this->push_back(*it);
                 }
-                l.clear();
+                l.half_clear();
                 return *this;
             }
 
 
-            bool parse_path(ipv4_addr,ipv4_addr,const std::string&,
+            bool parse_path(const std::string&,ipv4_addr,ipv4_addr,const std::string&,
                             vigil::json_object*,
                             PathHdr*,unsigned*,unsigned*);
 
-            bool parse_paths(ipv4_addr,ipv4_addr,const std::string&,
+            bool parse_paths(const std::string&,ipv4_addr,ipv4_addr,const std::string&,
                              std::list<vigil::json_object*>*);
 
         public:

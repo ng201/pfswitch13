@@ -16,86 +16,67 @@
 #include "vlog.hh"
 #include "flowmod.hh"
 #include "datapath-join.hh"
+#include "datapath-leave.hh"
 #include <stdio.h>
 
-#include <stdio.h>
+#include <cstdio>
+#include <cmath>
 #include "netinet++/ethernetaddr.hh"
 #include "netinet++/ethernet.hh"
 
 #include "../../../oflib/ofl-actions.h"
 #include "../../../oflib/ofl-messages.h"
 
+
+#include <boost/numeric/ublas/vector.hpp>
+#include <boost/numeric/ublas/io.hpp>
+
 #include "json-util.hh"
 
-#include "connection_config.h"
-#include "path_config.h"
-#include "region_config.h"
+#include "switch13.h"
+#include "switchs1.h"
+#include "switchs2.h"
+#include "switchs3.h"
+#include "switchs4.h"
+#include "switch13list.h"
 
 #include "groupmod.h"
+
+#include "rregionlist.h"
 
 using namespace vigil;
 using namespace vigil::container;
 using namespace vigil::json;
 using namespace std;
 
-namespace {
+namespace{
 
-struct Mac_source
-{
-    /* Key. */
-    datapathid datapath_id;     /* Switch. */
-    ethernetaddr mac;           /* Source MAC. */
+Vlog_module log("PFSwitch13");
 
-    /* Value. */
-    mutable int port;           /* Port where packets from 'mac' were seen. */
-
-    Mac_source() : port(-1) { }
-    Mac_source(datapathid datapath_id_, ethernetaddr mac_)
-        : datapath_id(datapath_id_), mac(mac_), port(-1)
-        { }
-};
-
-bool operator==(const Mac_source& a, const Mac_source& b)
-{
-    return a.datapath_id == b.datapath_id && a.mac == b.mac;
-}
-
-bool operator!=(const Mac_source& a, const Mac_source& b) 
-{
-    return !(a == b);
-}
-
-struct Hash_mac_source
-{
-    std::size_t operator()(const Mac_source& val) const {
-        uint32_t x;
-        x = vigil::fnv_hash(&val.datapath_id, sizeof val.datapath_id);
-        x = vigil::fnv_hash(val.mac.octet, sizeof val.mac.octet, x);
-        return x;
-    }
-};
-
-Vlog_module log("QPFSwitch");
-
-class QPFSwitch:public Component{
+/// \class PFSwitch13
+class PFSwitch13:public Component{
 
     private:
 
-        json_object *config;               ///< The whole cfg file in json.
-        bool setup_flows;                  ///< ???
-        double delay;                      ///< Polling delay.
         std::string as;                    ///< Path id is...
-        ConnectionList connection_list;    ///< The list of defined connections.
-        RegionList region_list;            ///< The list of defined routing regions.
+        double delay;                      ///< Polling delay.
+        timeval timeout;                   ///< Polling delat in timeval.
 
-        typedef hash_set<Mac_source, Hash_mac_source> Source_table;
+        pfswitch13::Switch13List sw;
 
-        Source_table sources;
+        json_object *config;               ///< The whole cfg file in json.
+
+        unsigned active_region;                        ///< The id of the active region.
+        pfswitch13::RRegionList regions;               ///< The roouting regions and their splitting ratios
+        boost::numeric::ublas::vector<double> demand;  ///< The current demand vector
+
+        std::vector<bool> visible;                     ///< Active switches.
+        std::vector<bool> invalid;                     ///< The invalid switches, i.e., switches beeing in wrong routing region.
 
     public:
 
         /// Ctor.
-        QPFSwitch(const Context* c,const json_object*):Component(c){}
+        PFSwitch13(const Context* c,const json_object*):Component(c){}
 
         /// Configure.
         void configure(const Configuration*);
@@ -103,21 +84,33 @@ class QPFSwitch:public Component{
         /// Install handles.
         void install();
 
+        void swapRRegion(bool=false);
+
         /// New packet without rule.
         Disposition handle(const Event&);
 
         /// When router comes up, run this function.
         Disposition handle_dp_join(const Event& e);
 
+        /// When router switches off.
+        Disposition handle_dp_leave(const Event& e);
+
+        /// When router comes up, run this function.
+        void handle_timeout();
+
+        /// When router comes up, run this function.
+        Disposition handle_stat(const Event& e);
+
+
 };
 
-void QPFSwitch::configure(const Configuration* conf){
-    setup_flows=true; // default value
+void PFSwitch13::configure(const Configuration* conf){
 
     //Get commandline arguments
     std::string input_file;
     const hash_map<string, string> argmap=conf->get_arguments_list();
     hash_map<string, string>::const_iterator i;
+
     i=argmap.find("cfg");
     if(i!=argmap.end()) input_file=i->second;
     else exit(-1);
@@ -129,7 +122,7 @@ void QPFSwitch::configure(const Configuration* conf){
         VLOG_INFO(log,"Query delay set on command line. Delay is %f ms.",delay);
     }
 
-    config=load_document(input_file.c_str());
+    json_object *config=load_document(input_file.c_str());
     if(!config){
         VLOG_ERR(log,"Config file error.");
         exit(-1);
@@ -155,280 +148,259 @@ void QPFSwitch::configure(const Configuration* conf){
         exit(-1);
     }
     if(!delay_set){
-        json_object *d=get_dict_value(ctrl,"query");
+        json_object *d=get_dict_value(ctrl,"delay");
         if(d){
             if(d->type==json_object::JSONT_FLOAT) delay=*((float*)d->object);
             else if(d->type==json_object::JSONT_INTEGER) delay=*((int*)d->object);
-            VLOG_INFO(log,"Query delay set in controller config file. Delay is %f ms.",delay);
+            VLOG_INFO(log,"Query delay set in controller config file. Delay is %f s.",delay);
         }
         else{
             delay=100;
-            VLOG_WARN(log,"Query delay not sent. Using %f ms.",delay);
+            VLOG_WARN(log,"Query delay not sent. Using %f s.",delay);
         }
     }
 
+    timeout.tv_sec=(unsigned)floor(delay);
+    timeout.tv_usec=(unsigned)(1000*(delay-floor(delay)));
+
+
     json_object *connections=get_dict_value(ctrl,"connections");
     if(connections && connections->type==json_object::JSONT_ARRAY){
-        if(!connection_list.parse((std::list<json_object*>*)connections->object)) exit(-1);
+        if(!sw.parse((std::list<json_object*>*)connections->object,as)) exit(-1);
     }
     else{
         VLOG_ERR(log,"Cannot find connections in the config file...");
         exit(-1);
     }
+    VLOG_INFO(log,"Will install %d switches...",sw.size());
+    demand.resize(sw.size());
+
+    size_t serial=0;
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it,serial++){
+        (*it)->init();
+        (*it)->attach((void*)&serial,sizeof(size_t)); // store index in/together with the switch
+    }
 
     json_object *regs=get_dict_value(ctrl,"regions");
     if(regs && regs->type==json_object::JSONT_ARRAY){
-        if(!region_list.parse((std::list<json_object*>*)regs->object)) exit(-1);
+        if(!regions.parse((std::list<json_object*>*)regs->object)) exit(-1);
     }
     else{
         VLOG_ERR(log,"No routing function given.");
         exit(-1);
     }
+    VLOG_INFO(log,"Nunber of routing regions: %d.",regions.size());
 
-    VLOG_INFO(log,"Nunber of connections: %d.",connection_list.size());
-    VLOG_INFO(log,"Nunber of routing regions: %d.",region_list.size());
+    invalid.resize(sw.size(),true);  // each one is invalid
+    visible.resize(sw.size(),false); // there aren't connected switches
 
 }
 
-void QPFSwitch::install(){
-    register_handler(Datapath_join_event::static_get_name(),boost::bind(&QPFSwitch::handle_dp_join,this,_1));
-    register_handler(Ofp_msg_event::get_name(OFPT_PACKET_IN),boost::bind(&QPFSwitch::handle,this,_1));
+void PFSwitch13::install(){
+    register_handler(Datapath_join_event::static_get_name(),boost::bind(&PFSwitch13::handle_dp_join,this,_1));
+    register_handler(Datapath_leave_event::static_get_name(),boost::bind(&PFSwitch13::handle_dp_leave,this,_1));
+
+    register_handler(Ofp_msg_event::get_name(OFPT_PACKET_IN),boost::bind(&PFSwitch13::handle,this,_1));
+
+    register_handler(Ofp_msg_event::get_stats_name(OFPMP_FLOW),boost::bind(&PFSwitch13::handle_stat,this,_1));
+    post(boost::bind(&PFSwitch13::handle_timeout,this),timeout);
 }
 
-Disposition QPFSwitch::handle_dp_join(const Event& e){
+void PFSwitch13::swapRRegion(bool anyway){
+
+    for(pfswitch13::RRegionList::const_iterator it=regions.begin();it!=regions.end();++it){
+        if(it->is_active(demand)){
+            VLOG_INFO(log,"The rid of the currently active regions is %d.",regions.size());
+
+            if(anyway || it->rid!=active_region){
+                for(pfswitch13::Switch13List::iterator it3=sw.begin();it3!=sw.end();++it3){
+                    if(visible[*(size_t*)((*it3)->getUID())] &&
+                       dynamic_cast<pfswitch13::SwitchS4*>(*it3)){
+                        std::map<std::string,unsigned*> r=it->ratios;
+                        for(std::map<std::string,unsigned*>::iterator it2=r.begin();it2!=r.end();++it2){
+                            if(it2->first==(*it3)->getName()){
+                                (*it3)->switchWeights(it2->second);
+                                invalid[*(size_t*)((*it3)->getUID())]=false;
+                            }
+                        }
+                    }
+                }
+            }
+            else{
+                for(pfswitch13::Switch13List::iterator it3=sw.begin();it3!=sw.end();++it3){
+                    if(visible[*(size_t*)((*it3)->getUID())] &&
+                       dynamic_cast<pfswitch13::SwitchS4*>(*it3) &&
+                       invalid[*(size_t*)((*it3)->getUID())]){
+                        std::map<std::string,unsigned*> r=it->ratios;
+                        for(std::map<std::string,unsigned*>::iterator it2=r.begin();it2!=r.end();++it2){
+                            if(it2->first==(*it3)->getName()){
+                                (*it3)->switchWeights(it2->second);
+                                invalid[*(size_t*)((*it3)->getUID())]=false;
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            active_region=it->rid;
+            break;
+        }
+    }
+
+}
+
+Disposition PFSwitch13::handle_dp_leave(const Event& e){
+    const Datapath_leave_event& dpl=assert_cast<const Datapath_leave_event&>(e);
+
+    vigil::datapathid dpid=dpl.datapath_id;
+
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+        if(**it==dpid){
+            demand(*(size_t*)((*it)->getUID()))=0;
+            visible[*(size_t*)((*it)->getUID())]=false;
+            //invalid[*(size_t*)((*it)->getUID())]=true;
+        }
+    }
+
+    VLOG_DBG(log,"Datapath leave from switch on dpid=0x%"PRIx64".\n",dpl.datapath_id.as_host());
+
+    return CONTINUE;
+}
+
+Disposition PFSwitch13::handle_dp_join(const Event& e){
 
     const Datapath_join_event& dpj=assert_cast<const Datapath_join_event&>(e);
 
     vigil::datapathid dpid=dpj.dpid;
-    for(ConnectionList::iterator cit=connection_list.begin();cit!=connection_list.end();++cit){
 
-        if(vigil::datapathid::from_host(cit->src_dpid)==dpid){
-            if(cit->paths.size()==1){
-                // single flow - flow table
-                PathNode pn=cit->paths[0].front();
+    VLOG_DBG(log,"Datapath join from switch on dpid=0x%"PRIx64".\n",dpj.dpid.as_host());
 
-                Flow f;
-                f.Add_Field("in_port",pn.in_port); // src_ip, ...
-                Actions *acts=new Actions();
-                acts->CreatePushAction(OFPAT_PUSH_VLAN,0x8100);
-                acts->CreateSetField("vlan_id",&(pn.pid));
-                acts->CreateOutput(pn.out_port);
-                Instruction *inst=new Instruction();
-                inst->CreateApply(acts);
-                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,0,
-                                           OFPFC_ADD,
-                                           OFP_FLOW_PERMANENT,
-                                           OFP_FLOW_PERMANENT,
-                                           0,//OFP_DEFAULT_PRIORITY,
-                                           0,
-                                           OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                mod->AddMatch(&f.match);
-                mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
-
-                VLOG_DBG(log,"Installing flow table to the switch on dpid= 0x%"PRIx64" to handle and pop VLAN vids\n", dpj.dpid.as_host());
-
-            }
-            else{
-                PathNode pn=cit->paths[0].front();
-
-                Flow f;
-                f.Add_Field("in_port",pn.in_port); // src_ip, ...
-                Actions *acts=new Actions();
-                acts->CreateGroupAction(pn.in_port);
-                Instruction *inst=new Instruction();
-                inst->CreateApply(acts);
-                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,0,
-                                           OFPFC_ADD,
-                                           OFP_FLOW_PERMANENT,
-                                           OFP_FLOW_PERMANENT,
-                                           0,//OFP_DEFAULT_PRIORITY,
-                                           0,
-                                           OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                mod->AddMatch(&f.match);
-                mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
-
-                VLOG_DBG(log,"Installing GOTO Group to the switch on dpid= 0x%"PRIx64"\n", dpj.dpid.as_host());
-
-                // multiple flows - group table
-                GroupMod *gmod=new GroupMod(pn.in_port,OFPGC_MODIFY,OFPGT_SELECT);  //ADD, MODIFY, DELETE
-                std::vector<Actions*> gr_acts;
-                std::vector<uint16_t> vlan_vids(100);
-                for(PathList::iterator it=cit->paths.begin();it!=cit->paths.end();++it){
-                    PathNode pn=it->front();
-                    if(vigil::datapathid::from_host(pn.dpid)!=dpid) continue; // this is a rule for other dpid
-
-                    Actions *acts1=new Actions();
-                    gr_acts.push_back(acts1);
-                    vlan_vids.push_back(pn.pid);
-
-                    acts1->CreatePushAction(OFPAT_PUSH_VLAN,0x8100);
-                    acts1->CreateSetField("vlan_id",&vlan_vids.back());
-                    acts1->CreateOutput(pn.out_port);
-
-                    gmod->addBucket((pn.pid==12?33:66),0,0,acts1);
-                }
-
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&gmod->gr_msg,0,true);
-                VLOG_DBG(log,"Installing group table to the switch on dpid= 0x%"PRIx64"\n", dpj.dpid.as_host());
-
-            }
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+        if(**it==dpid){
+            VLOG_DBG(log,"Installing table(s) to the switch on dpid=0x%"PRIx64".\n",dpj.dpid.as_host());
+            (*it)->configure();
+            demand(*(size_t*)((*it)->getUID()))=0;
+            visible[*(size_t*)((*it)->getUID())]=true;
+            invalid[*(size_t*)((*it)->getUID())]=true;
+            VLOG_INFO(log,"Table entries installed successfully.");
         }
-        else if(vigil::datapathid::from_host(cit->dst_dpid)==dpid){
-            for(PathList::iterator it=cit->paths.begin();it!=cit->paths.end();++it){
-                PathNode pn=it->back();
-                if(vigil::datapathid::from_host(pn.dpid)!=dpid) continue; // this is a rule for other dpid
-
-                Flow f;
-                f.Add_Field("in_port",pn.in_port);
-                f.Add_Field(as.c_str(),pn.pid);
-                Actions *acts=new Actions();
-                acts->CreatePopVlan();
-                acts->CreateOutput(pn.out_port);
-                Instruction *inst=new Instruction();
-                inst->CreateApply(acts);
-                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,0,
-                                           OFPFC_ADD,
-                                           OFP_FLOW_PERMANENT,
-                                           OFP_FLOW_PERMANENT,
-                                           0,//OFP_DEFAULT_PRIORITY,
-                                           0,
-                                           OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                mod->AddMatch(&f.match);
-                mod->AddInstructions(inst);
-                send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
-
-                VLOG_DBG(log,"Installing flow table to the switch on dpid= 0x%"PRIx64" to handle and pop VLAN vids\n", dpj.dpid.as_host());
-            }
-        }
-        else{
-            for(PathList::iterator it=cit->paths.begin();it!=cit->paths.end();++it){
-                for(PathPrimitive::iterator it2=it->begin();it2!=it->end();++it2){
-                    PathNode pn=*it2;
-                    if(vigil::datapathid::from_host(pn.dpid)!=dpid) continue; // this is a rule for other dpid
-
-                    Flow f;
-                    f.Add_Field("in_port",pn.in_port);
-                    f.Add_Field(as.c_str(),pn.pid);
-                    Actions *acts=new Actions();
-                    acts->CreateOutput(pn.out_port);
-                    Instruction *inst=new Instruction();
-                    inst->CreateApply(acts);
-                    FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,0,
-                                               OFPFC_ADD,
-                                               OFP_FLOW_PERMANENT,
-                                               OFP_FLOW_PERMANENT,
-                                               0,//OFP_DEFAULT_PRIORITY,
-                                               0,
-                                               OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                    mod->AddMatch(&f.match);
-                    mod->AddInstructions(inst);
-                    send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
-
-                    VLOG_DBG(log,"Installing flow table to the switch on dpid= 0x%"PRIx64" to handle VLAN vids\n", dpj.dpid.as_host());
-                }
-            }
-        }
-
     }
 
+    swapRRegion();
+
     return CONTINUE;
-
-
-
-    /* The behavior on a flow miss is to drop packets
-       so we need to install a default flow */
-//    VLOG_DBG(log,"Installing default flows to the switch on dpid= 0x%"PRIx64"\n", dpj.dpid.as_host());
-//
-//    return CONTINUE;
-
 }
 
-Disposition QPFSwitch::handle(const Event& e){
+void PFSwitch13::handle_timeout(){
+    post(boost::bind(&PFSwitch13::handle_timeout,this),timeout);
+
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+        (*it)->statReq();
+    }
+    VLOG_INFO(log,"Stat requests sent successfully.");
+}
+
+Disposition PFSwitch13::handle_stat(const Event& e){
+
+    const Ofp_msg_event& pi = assert_cast<const Ofp_msg_event&>(e);
+
+    datapathid dpid=pi.dpid; // the datapath id
+    VLOG_INFO(log,"readind flow table stats on dpid=0x%"PRIx64".\n",pi.dpid.as_host());
+
+    struct ofl_msg_multipart_reply_flow *in=(struct ofl_msg_multipart_reply_flow*)**pi.msg;
+
+    if(in->stats_num!=1){
+        VLOG_DBG(log,"More than one entry for switch on dpid=0x%"PRIx64".\n",pi.dpid.as_host());
+        return CONTINUE;
+    }
+    Flow t=Flow((ofl_match*)in->stats[0]->match);
+    VLOG_INFO(log,"oxm-match: %s",t.to_string().c_str());
+
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+        if(**it==dpid){
+            if((*it)->same((ofl_match*)in->stats[0]->match)){
+                uint64_t byte_count=in->stats[0]->byte_count;
+
+                demand(*(size_t*)((*it)->getUID()))=byte_count/delay-demand(*(size_t*)((*it)->getUID()));
+
+                std::cerr<<"Demand: "<<demand(*(size_t*)((*it)->getUID()))<<"\n";
+
+            }
+        }
+    }
+
+    swapRRegion();
+
+    /*
+     struct ofl_msg_multipart_reply_header{
+         struct ofl_msg_header      header;  // OFPT_MULTIPART_REPLY
+         enum ofp_multipart_types   type;    // One of the OFPMP_* constants.
+        uint16_t                    flags;
+     };
+
+     struct ofl_msg_multipart_reply_flow{
+         struct ofl_msg_multipart_reply_header   header; // OFPMP_FLOW
+         size_t                                  stats_num;
+         struct ofl_flow_stats                   **stats;
+     };
+
+     struct ofl_flow_stats{
+         uint8_t                         table_id;      // ID of table flow came from.
+         uint32_t                        duration_sec;  // Time flow has been alive in secs.
+         uint32_t                        duration_nsec; // Time flow has been alive in nsecs beyond duration_sec.
+         uint16_t                        priority;      // Priority of the entry. Only meaningful when this is not an exact-match entry.
+         uint16_t                        idle_timeout;  // Number of seconds idle before expiration.
+         uint16_t                        hard_timeout;  // Number of seconds before expiration.
+         uint64_t                        cookie;        // Opaque controller-issued identifier.
+         uint64_t                        packet_count;  // Number of packets in flow.
+         uint64_t                        byte_count;    // Number of bytes in flow.
+         struct ofl_match_header        *match;         // Description of fields.
+         size_t                          instructions_num;
+         struct ofl_instruction_header **instructions;  // Instruction set.
+     };
+    */
+
+    return CONTINUE;
+}
+
+Disposition PFSwitch13::handle(const Event& e){
     const Ofp_msg_event& pi = assert_cast<const Ofp_msg_event&>(e);
 
     struct ofl_msg_packet_in *in = (struct ofl_msg_packet_in *)**pi.msg;
     Flow *flow = new Flow((struct ofl_match*) in->match);
 
     /* drop all LLDP packets */
-        uint16_t dl_type;
-        flow->get_Field<uint16_t>("eth_type",&dl_type);
-        if (dl_type == ethernet::LLDP){
-            return CONTINUE;
-        }
-       
-    uint32_t in_port;
-    flow->get_Field<uint32_t>("in_port", &in_port);        
-	
-   
-    /* Learn the source. */
-    uint8_t eth_src[6];
-    flow->get_Field("eth_src", eth_src);
-    ethernetaddr dl_src(eth_src);
-    if (!dl_src.is_multicast()) {
-        Mac_source src(pi.dpid, dl_src);
-        Source_table::iterator i = sources.insert(src).first;
-
-        if (i->port != in_port) {
-            i->port = in_port;
-            VLOG_DBG(log, "learned that "EA_FMT" is on datapath %s port %d",
-                     EA_ARGS(&dl_src), pi.dpid.string().c_str(),
-                     (int) in_port);
-        }
-    } else {
-        VLOG_DBG(log, "multicast packet source "EA_FMT, EA_ARGS(&dl_src));
+    uint16_t dl_type;
+    flow->get_Field<uint16_t>("eth_type",&dl_type);
+    if (dl_type == ethernet::LLDP){
+        return CONTINUE;
     }
+
+    uint32_t in_port;
+    flow->get_Field<uint32_t>("in_port",&in_port);
 
     /* Figure out the destination. */
     int out_port = -1;        /* Flood by default. */
     uint8_t eth_dst[6];
-    flow->get_Field("eth_dst", eth_dst);
-    ethernetaddr dl_dst(eth_dst);
-    if (!dl_dst.is_multicast()) {
-        Mac_source dst(pi.dpid, dl_dst);
-	Source_table::iterator i(sources.find(dst));
-        if (i != sources.end()) {
-            out_port = i->port;
-        }
-    }
-		
-    /* Set up a flow if the output port is known. */
-    if (setup_flows && out_port != -1) {
 
-        
-	Flow  f;
-	f.Add_Field("in_port", in_port);
-	f.Add_Field("eth_src", eth_src);
-	f.Add_Field("eth_dst",eth_dst);
-	Actions *acts = new Actions();
-    acts->CreateOutput(out_port);
-    Instruction *inst =  new Instruction();
-    inst->CreateApply(acts);
-    FlowMod *mod = new FlowMod(0x00ULL,0x00ULL, 0,OFPFC_ADD, 1, OFP_FLOW_PERMANENT, OFP_DEFAULT_PRIORITY,in->buffer_id, 
-                                    OFPP_ANY, OFPG_ANY, ofd_flow_mod_flags());
-    mod->AddMatch(&f.match);
-	mod->AddInstructions(inst);
-    send_openflow_msg(pi.dpid, (struct ofl_msg_header *)&mod->fm_msg, 0/*xid*/, true/*block*/);
-    }
     /* Send out packet if necessary. */
-    if (!setup_flows || out_port == -1 || in->buffer_id == UINT32_MAX) {
-        if (in->buffer_id == UINT32_MAX) {
-            if (in->total_len != in->data_length) {
-                /* Control path didn't buffer the packet and didn't send us
-                 * the whole thing--what gives? */
-                VLOG_DBG(log, "total_len=%"PRIu16" data_len=%zu\n",
-                        in->total_len, in->data_length);
-                return CONTINUE;
-            }
-            send_openflow_pkt(pi.dpid, Nonowning_buffer(in->data, in->data_length), in_port, out_port == -1 ? OFPP_FLOOD : out_port, true/*block*/);
-        } else {
-            send_openflow_pkt(pi.dpid, in->buffer_id, in_port, out_port == -1 ? OFPP_FLOOD : out_port, true/*block*/);
+    if (in->buffer_id == UINT32_MAX) {
+        if (in->total_len != in->data_length) {
+            /* Control path didn't buffer the packet and didn't send us
+             * the whole thing--what gives? */
+            VLOG_DBG(log, "total_len=%"PRIu16" data_len=%zu\n",
+                    in->total_len, in->data_length);
+            return CONTINUE;
         }
+        send_openflow_pkt(pi.dpid, Nonowning_buffer(in->data, in->data_length), in_port, out_port == -1 ? OFPP_FLOOD : out_port, true/*block*/);
+    }
+    else {
+        send_openflow_pkt(pi.dpid, in->buffer_id, in_port, out_port == -1 ? OFPP_FLOOD : out_port, true/*block*/);
     }
     return CONTINUE;
 }
 
-REGISTER_COMPONENT(container::Simple_component_factory<QPFSwitch>, QPFSwitch);
+REGISTER_COMPONENT(container::Simple_component_factory<PFSwitch13>, PFSwitch13);
 
-} // unnamed namespacennamed namespace
+} // unnamed namespace

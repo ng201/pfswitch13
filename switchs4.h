@@ -70,35 +70,44 @@ namespace pfswitch13{
             virtual ~SwitchS4(){
                 delete ps;
             }
-            virtual void configure(unsigned tnum=OFP_DEFAULT_PRIORITY,enum of_tmod_cmd cmd=OFTM_ADD){
+
+            virtual bool responsible(unsigned pid)const{
+                PathHdr *p=ps;  // temp pointer to be used and aletered
+                while(p->pid){
+                    if(p->pid==pid) return true;
+                    p++;
+                }
+                return false;
+            }
+
+            virtual void configure(unsigned _tnum=0,enum of_tmod_cmd cmd=OFTM_ADD){
+
+                tnum=_tnum;
 
                 if(!ps || ps->pid==0) return;
 
-                Flow f;
-                f.Add_Field("in_port",data.in_port); // src_ip, ...
-                f.Add_Field("ipv4_src",src_ip); // src_ip, ...
-                f.Add_Field("ipv4_dst",dst_ip); // src_ip, ...
+                //std::cerr<<self.to_string()<<"\n";
 
                 Actions *acts=new Actions();
-                acts->CreateGroupAction(data.in_port);
+                acts->CreateGroupAction(data.pid);
                 Instruction *inst=new Instruction();
                 inst->CreateApply(acts);
-                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,0,
+                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,tnum,
                                            toFlowCmd(cmd), //OFPFC_ADD, // cf
                                            OFP_FLOW_PERMANENT,
                                            OFP_FLOW_PERMANENT,
-                                           tnum,//OFP_DEFAULT_PRIORITY, // tnum
+                                           OFP_DEFAULT_PRIORITY, // tnum
                                            0,
                                            OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                mod->AddMatch(&f.match);
+                mod->AddMatch(&self.match);
                 mod->AddInstructions(inst);
                 nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
 
-                delete inst; delete acts;
+                //delete inst; delete acts;
 
 
                 // multiple flows - group table
-                GroupMod *gmod=new GroupMod(data.in_port,toGroupCmd(cmd) /*OFPGC_ADD*/,OFPGT_SELECT);  //ADD, MODIFY, DELETE
+                GroupMod *gmod=new GroupMod(data.pid,toGroupCmd(cmd) /*OFPGC_ADD*/,OFPGT_SELECT);  //ADD, MODIFY, DELETE
                 std::vector<Actions*> gr_acts;
                 PathHdr *p=ps;
                 while(p->pid){
@@ -134,7 +143,7 @@ namespace pfswitch13{
 
 
             virtual void switchWeights(unsigned *ratios,enum of_tmod_cmd cmd=OFTM_MODIFY){
-                GroupMod *gmod=new GroupMod(data.in_port,toGroupCmd(cmd) /*OFPGC_MODIFY*/,OFPGT_SELECT);  //ADD, MODIFY, DELETE
+                GroupMod *gmod=new GroupMod(data.pid,toGroupCmd(cmd) /*OFPGC_MODIFY*/,OFPGT_SELECT);  //ADD, MODIFY, DELETE
                 std::vector<Actions*> gr_acts; // to store actions
                 PathHdr *p=ps;                 // temp pointer to be used and aletered
                 while(p->pid){
@@ -165,7 +174,6 @@ namespace pfswitch13{
                 }
 
             }
-
 
 
     }; // class SwitchS4
