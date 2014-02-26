@@ -68,10 +68,11 @@ class PFSwitch13:public Component{
 
         unsigned active_region;                        ///< The id of the active region.
         pfswitch13::RRegionList regions;               ///< The roouting regions and their splitting ratios
-        boost::numeric::ublas::vector<double> demand;  ///< The current demand vector
 
-        std::vector<bool> visible;                     ///< Active switches.
-        std::vector<bool> invalid;                     ///< The invalid switches, i.e., switches beeing in wrong routing region.
+        std::vector<pfswitch13::Switch13*> src_sw;     ///< Switches acting like sources of demands.
+        boost::numeric::ublas::vector<double> demand;  ///< The current demand vector
+        std::vector<bool> visible;                     ///< Active source switches.
+        std::vector<bool> invalid;                     ///< The invalidated source switches, i.e., switches beeing in wrong routing region.
 
     public:
 
@@ -173,13 +174,28 @@ void PFSwitch13::configure(const Configuration* conf){
         exit(-1);
     }
     VLOG_INFO(log,"Will install %d switches...",sw.size());
-    demand.resize(sw.size());
 
+    size_t dummy=(size_t)-1; // dummy variable
     size_t serial=0;
-    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it,serial++){
+    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+
         (*it)->init();
-        (*it)->attach((void*)&serial,sizeof(size_t)); // store index in/together with the switch
+
+        if(dynamic_cast<pfswitch13::SwitchS1*>(*it) ||
+           dynamic_cast<pfswitch13::SwitchS4*>(*it)){
+            src_sw.push_back(*it);
+            (*it)->attach((void*)&serial,sizeof(size_t)); // store index in/together with the switch
+            serial++;
+        }
+        else{
+            (*it)->attach((void*)&dummy,sizeof(size_t)); // store index in/together with the switch
+        }
     }
+
+    demand.resize(src_sw.size());        // init the demand vector
+    invalid.resize(src_sw.size(),true);  // each one is invalid
+    visible.resize(src_sw.size(),false); // there aren't connected switches
+    VLOG_INFO(log,"Will install %d demands...",src_sw.size());
 
     json_object *regs=get_dict_value(ctrl,"regions");
     if(regs && regs->type==json_object::JSONT_ARRAY){
@@ -190,9 +206,6 @@ void PFSwitch13::configure(const Configuration* conf){
         exit(-1);
     }
     VLOG_INFO(log,"Nunber of routing regions: %d.",regions.size());
-
-    invalid.resize(sw.size(),true);  // each one is invalid
-    visible.resize(sw.size(),false); // there aren't connected switches
 
 }
 
@@ -213,7 +226,7 @@ void PFSwitch13::swapRRegion(bool anyway){
             VLOG_INFO(log,"The rid of the currently active regions is %d.",regions.size());
 
             if(anyway || it->rid!=active_region){
-                for(pfswitch13::Switch13List::iterator it3=sw.begin();it3!=sw.end();++it3){
+                for(std::vector<pfswitch13::Switch13*>::iterator it3=src_sw.begin();it3!=src_sw.end();++it3){
                     if(visible[*(size_t*)((*it3)->getUID())] &&
                        dynamic_cast<pfswitch13::SwitchS4*>(*it3)){
                         std::map<std::string,unsigned*> r=it->ratios;
@@ -227,7 +240,7 @@ void PFSwitch13::swapRRegion(bool anyway){
                 }
             }
             else{
-                for(pfswitch13::Switch13List::iterator it3=sw.begin();it3!=sw.end();++it3){
+                for(std::vector<pfswitch13::Switch13*>::iterator it3=src_sw.begin();it3!=src_sw.end();++it3){
                     if(visible[*(size_t*)((*it3)->getUID())] &&
                        dynamic_cast<pfswitch13::SwitchS4*>(*it3) &&
                        invalid[*(size_t*)((*it3)->getUID())]){
@@ -255,7 +268,7 @@ Disposition PFSwitch13::handle_dp_leave(const Event& e){
 
     vigil::datapathid dpid=dpl.datapath_id;
 
-    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+    for(std::vector<pfswitch13::Switch13*>::iterator it=src_sw.begin();it!=src_sw.end();++it){
         if(**it==dpid){
             demand(*(size_t*)((*it)->getUID()))=0;
             visible[*(size_t*)((*it)->getUID())]=false;
@@ -280,9 +293,13 @@ Disposition PFSwitch13::handle_dp_join(const Event& e){
         if(**it==dpid){
             VLOG_DBG(log,"Installing table(s) to the switch on dpid=0x%"PRIx64".\n",dpj.dpid.as_host());
             (*it)->configure();
-            demand(*(size_t*)((*it)->getUID()))=0;
-            visible[*(size_t*)((*it)->getUID())]=true;
-            invalid[*(size_t*)((*it)->getUID())]=true;
+
+            if(dynamic_cast<pfswitch13::SwitchS1*>(*it) ||
+               dynamic_cast<pfswitch13::SwitchS4*>(*it)){
+                demand(*(size_t*)((*it)->getUID()))=0;
+                visible[*(size_t*)((*it)->getUID())]=true;
+                invalid[*(size_t*)((*it)->getUID())]=true;
+            }
             VLOG_INFO(log,"Table entries installed successfully.");
         }
     }
@@ -295,8 +312,9 @@ Disposition PFSwitch13::handle_dp_join(const Event& e){
 void PFSwitch13::handle_timeout(){
     post(boost::bind(&PFSwitch13::handle_timeout,this),timeout);
 
-    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
-        (*it)->statReq();
+    for(std::vector<pfswitch13::Switch13*>::iterator it=src_sw.begin();it!=src_sw.end();++it){
+        if(visible[*(size_t*)((*it)->getUID())]) 
+            (*it)->statReq();
     }
     VLOG_INFO(log,"Stat requests sent successfully.");
 }
@@ -317,14 +335,14 @@ Disposition PFSwitch13::handle_stat(const Event& e){
     Flow t=Flow((ofl_match*)in->stats[0]->match);
     VLOG_INFO(log,"oxm-match: %s",t.to_string().c_str());
 
-    for(pfswitch13::Switch13List::iterator it=sw.begin();it!=sw.end();++it){
+    for(std::vector<pfswitch13::Switch13*>::iterator it=src_sw.begin();it!=src_sw.end();++it){
         if(**it==dpid){
             if((*it)->same((ofl_match*)in->stats[0]->match)){
                 uint64_t byte_count=in->stats[0]->byte_count;
 
                 demand(*(size_t*)((*it)->getUID()))=byte_count/delay-demand(*(size_t*)((*it)->getUID()));
 
-                std::cerr<<"Demand: "<<demand(*(size_t*)((*it)->getUID()))<<"\n";
+                //std::cerr<<"Demand: "<<demand(*(size_t*)((*it)->getUID()))<<"\n";
 
             }
         }
