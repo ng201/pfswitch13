@@ -86,26 +86,6 @@ namespace pfswitch13{
 
                 if(!ps || ps->pid==0) return;
 
-                //std::cerr<<self.to_string()<<"\n";
-
-                Actions *acts=new Actions();
-                acts->CreateGroupAction(data.pid);
-                Instruction *inst=new Instruction();
-                inst->CreateApply(acts);
-                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,tnum,
-                                           toFlowCmd(cmd), //OFPFC_ADD, // cf
-                                           OFP_FLOW_PERMANENT,
-                                           OFP_FLOW_PERMANENT,
-                                           OFP_DEFAULT_PRIORITY, // tnum
-                                           0,
-                                           OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
-                mod->AddMatch(&self.match);
-                mod->AddInstructions(inst);
-                nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
-
-                //delete inst; delete acts;
-
-
                 // multiple flows - group table
                 GroupMod *gmod=new GroupMod(data.pid,toGroupCmd(cmd) /*OFPGC_ADD*/,OFPGT_SELECT);  //ADD, MODIFY, DELETE
                 std::vector<Actions*> gr_acts;
@@ -138,6 +118,27 @@ namespace pfswitch13{
                 for(std::vector<Actions*>::iterator it=gr_acts.begin();it!=gr_acts.end();++it){
                     delete *it;
                 }
+
+
+                //std::cerr<<self.to_string()<<"\n";
+                Actions *acts=new Actions();
+                acts->CreateGroupAction(data.pid);
+                Instruction *inst=new Instruction();
+                inst->CreateApply(acts);
+                FlowMod *mod = new FlowMod(0x00ULL,0x00ULL,tnum,
+                                           toFlowCmd(cmd), //OFPFC_ADD, // cf
+                                           OFP_FLOW_PERMANENT,
+                                           OFP_FLOW_PERMANENT,
+                                           OFP_DEFAULT_PRIORITY, // tnum
+                                           0,
+                                           OFPP_ANY,OFPG_ANY,ofd_flow_mod_flags());
+                mod->AddMatch(&self.match);
+                mod->AddInstructions(inst);
+                nox::send_openflow_msg(dpid,(struct ofl_msg_header *)&mod->fm_msg,0,true);
+
+                //delete inst; delete acts;
+
+
 
             }
 
