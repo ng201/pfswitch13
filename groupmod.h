@@ -56,6 +56,6 @@ class GroupMod{
 
         }
 
-};
+}; // class GroupMod
 
 #endif // _GROUPMOD_H_
