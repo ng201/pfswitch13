@@ -1,0 +1,5 @@
+sudo mn --custom gth.py --topo gth --controller remote --mac
+
+./nox_core -v -i ptcp:6633 pfswitch13=cfg=/path_to_file/gth.json 
+
+

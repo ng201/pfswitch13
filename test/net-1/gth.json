@@ -1,0 +1,99 @@
+{
+	"controller":{
+		"delay": 10,
+		"model": "pathflow",
+		"as": "vlan_id",
+		"connections":[
+			{
+				"flow":{
+					"src_ip":"10.0.0.1",
+					"dst_ip":"10.0.0.2",
+					"name":"flow-1"
+				},
+				"paths":[
+					{
+						"pid": 1,
+						"actions":[
+							{
+								"dpid": 1,
+								"in_port": 1,
+								"out_port": 2
+							},
+							{
+								"dpid": 2,
+								"in_port": 4,
+								"out_port": 3
+							},
+							{
+								"dpid": 3,
+								"in_port": 3,
+								"out_port": 1
+							}
+						]
+					}
+				]
+			},
+			{
+				"flow":{
+					"src_ip":"10.0.0.1",
+					"dst_ip":"10.0.0.2",
+					"name":"flow-2"
+				},
+				"paths":[
+					{
+						"pid": 2,
+						"actions":[
+							{
+								"dpid": 4,
+								"in_port": 1,
+								"out_port": 3
+							},
+							{
+								"dpid": 2,
+								"in_port": 2,
+								"out_port": 3
+							},
+							{
+								"dpid": 3,
+								"in_port": 3,
+								"out_port": 1
+							}
+						]
+					},
+					{
+						"pid": 3,
+						"actions":[
+							{
+								"dpid": 4,
+								"in_port": 1,
+								"out_port": 2
+							},
+							{
+								"dpid": 3,
+								"in_port": 2,
+								"out_port": 1
+							}
+						]
+					}
+				]
+			}
+		],
+		"regions":[
+			{
+				"rid": 1,
+				"lhs": "[0,0]()",
+				"rhs": "[0]()",
+				"actions":[
+					{
+						"name":"flow-1",
+						"ratio":"1"
+					},
+					{
+						"name":"flow-2",
+						"ratio":"33;66"
+					}
+				]
+			}
+		]
+	}
+}
